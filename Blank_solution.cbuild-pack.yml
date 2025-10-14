@@ -1,0 +1,8 @@
+cbuild-pack:
+  resolved-packs:
+    - resolved-pack: ARM::CMSIS@6.2.0
+      selected-by-pack:
+        - ARM::CMSIS
+    - resolved-pack: NordicSemiconductor::nRF_DeviceFamilyPack@8.44.1
+      selected-by-pack:
+        - NordicSemiconductor::nRF_DeviceFamilyPack
