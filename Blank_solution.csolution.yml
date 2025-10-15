@@ -42,9 +42,3 @@ solution:
   projects:
     - project: business_card/business_card.cproject.yml
   compiler: AC6
-
-  # Debug configuration
-  debugger:
-    - name: J-Link
-      protocol: swd
-      clock: 4000000

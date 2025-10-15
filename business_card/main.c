@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "RTE_Components.h"
 #include CMSIS_device_header
+#include "./leds/leds.h"
 
 
 #define LED_PIN         16U
@@ -14,7 +15,7 @@ static void busy_wait(uint32_t cycles) {
 }
 
 static void delay_ms(uint32_t milliseconds) {
-    const uint32_t cycles_per_ms = 8000U; // Approximation for 16 MHz core clock
+    const uint32_t cycles_per_ms = 2300U; // Approximation for 16 MHz core clock
     while (milliseconds--) {
         busy_wait(cycles_per_ms);
     }
