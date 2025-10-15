@@ -1,5 +1,5 @@
-#ifndef UTILS_H
-#define UTILS_H
+#pragma once
+
 #include <stdbool.h>
 #include <stdint.h>
 #include "RTE_Components.h"
@@ -17,5 +17,3 @@ static void delay_ms(uint32_t milliseconds) {
         busy_wait(cycles_per_ms);
     }
 }
-
-#endif

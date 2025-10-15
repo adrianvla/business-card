@@ -1,6 +1,4 @@
-#ifndef ANIMATION_H
-#define ANIMATION_H
-
+#pragma once
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -112,5 +110,3 @@ static void play_animation_once(uint8_t name, uint32_t speed_ms, int32_t timeout
         delay_ms(LOOP_MS);
     }
 }
-
-#endif
