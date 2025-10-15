@@ -3,6 +3,8 @@ project:
     - group: Source Files
       files:
         - file: ./main.c
+        - file: ./networking/nfc.c
+        - file: ./networking/bluetooth.c
   components:
     - component: ARM::CMSIS:CORE
     - component: Device:Startup
