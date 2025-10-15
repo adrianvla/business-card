@@ -10,7 +10,7 @@
 
 
 int main(void) {
-    set_all_leds(false);
+    set_all_leds(true);
 
     nfc_init();
     nfc_start_sense();
@@ -18,7 +18,11 @@ int main(void) {
     (void)bluetooth_init();
     bluetooth_enable_test_carrier();
 
-    bool show_odd_leds = true;
+    play_animation_once(ANIMATION_ALTERNATE, 125U, 10, LOOP_SLICE_MS);
+    play_animation_once(ANIMATION_FROM_CENTER_RIPPLE, 125U, 20, LOOP_SLICE_MS);
+    play_animation_once(ANIMATION_ALTERNATE, 125U, 10, LOOP_SLICE_MS);
+
+
     uint32_t nfc_elapsed_ms = NFC_POLL_INTERVAL_MS;
     bool field_present = false;    
 
