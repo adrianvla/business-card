@@ -9,14 +9,25 @@
 #define BLE_ADV_HEADER_TYPE_NONCONN 0x42u
 #define BLE_ADV_ADDRESS_SIZE        6u
 
-static const uint8_t k_adv_channels[] = { 2u, 26u, 80u }; // 2402 MHz, 2426 MHz, 2480 MHz
+typedef struct {
+    uint8_t rf_channel;
+    uint8_t whiten_channel;
+} ble_channel_config_t;
+
+static const ble_channel_config_t k_adv_channels[] = {
+    { 2u, 37u },  // 2402 MHz, ADV channel 37
+    { 26u, 38u }, // 2426 MHz, ADV channel 38
+    { 80u, 39u }  // 2480 MHz, ADV channel 39
+};
 static uint8_t s_adv_pdu[2u + BLE_ADV_ADDRESS_SIZE + BLUETOOTH_MAX_ADV_PAYLOAD] = { 0 };
 static size_t s_adv_payload_len = 0u;
 static bool s_bluetooth_initialized = false;
 static uint8_t s_current_channel_index = 0u;
+static bool s_test_carrier_enabled = false;
+static const uint8_t s_test_carrier_packet = 0xFFu;
 
 static const uint8_t k_default_adv_address[BLE_ADV_ADDRESS_SIZE] = {
-    0xAD, 0xDE, 0x1D, 0xEA, 0x52, 0xB1
+    0xC1, 0xDE, 0x1D, 0xEA, 0x52, 0xB1
 };
 
 static const uint8_t k_default_adv_payload[] = {
@@ -79,9 +90,9 @@ static void bluetooth_configure_radio(void) {
     NRF_RADIO->SHORTS = 0u;
 }
 
-static void bluetooth_apply_channel(uint8_t channel) {
-    NRF_RADIO->FREQUENCY = channel;
-    NRF_RADIO->DATAWHITEIV = (uint32_t)(channel & 0x3Fu);
+static void bluetooth_apply_channel(const ble_channel_config_t *config) {
+    NRF_RADIO->FREQUENCY = config->rf_channel;
+    NRF_RADIO->DATAWHITEIV = (uint32_t)(config->whiten_channel & 0x3Fu);
 }
 
 static void bluetooth_wait_for_event(volatile uint32_t *event_reg) {
@@ -139,7 +150,7 @@ void bluetooth_broadcast_tick(void) {
         return;
     }
 
-    const uint8_t channel = k_adv_channels[s_current_channel_index];
+    const ble_channel_config_t *channel = &k_adv_channels[s_current_channel_index];
     s_current_channel_index = (uint8_t)((s_current_channel_index + 1u) % (sizeof(k_adv_channels) / sizeof(k_adv_channels[0])));
 
     bluetooth_apply_channel(channel);
@@ -178,4 +189,60 @@ void bluetooth_shutdown(void) {
     s_bluetooth_initialized = false;
 
     bluetooth_disable_hfclk();
+}
+
+void bluetooth_enable_test_carrier(void) {
+    if (s_test_carrier_enabled) {
+        return;
+    }
+
+    bluetooth_enable_hfclk();
+
+    NRF_RADIO->EVENTS_DISABLED = 0u;
+    NRF_RADIO->TASKS_DISABLE = 1u;
+    while (NRF_RADIO->EVENTS_DISABLED == 0u) {
+        __NOP();
+    }
+    NRF_RADIO->EVENTS_DISABLED = 0u;
+
+    NRF_RADIO->POWER = 1u;
+    NRF_RADIO->SHORTS = 0u;
+    NRF_RADIO->TXPOWER = RADIO_TXPOWER_TXPOWER_Pos4dBm;
+    NRF_RADIO->MODE = RADIO_MODE_MODE_Ble_1Mbit;
+    NRF_RADIO->FREQUENCY = 40u; // 2440 MHz
+
+    NRF_RADIO->PCNF0 = (0u << RADIO_PCNF0_S0LEN_Pos) |
+                       (0u << RADIO_PCNF0_LFLEN_Pos) |
+                       (0u << RADIO_PCNF0_S1LEN_Pos);
+
+    NRF_RADIO->PCNF1 = (1u << RADIO_PCNF1_MAXLEN_Pos) |
+                       (0u << RADIO_PCNF1_STATLEN_Pos) |
+                       (3u << RADIO_PCNF1_BALEN_Pos) |
+                       (RADIO_PCNF1_ENDIAN_Big << RADIO_PCNF1_ENDIAN_Pos) |
+                       (0u << RADIO_PCNF1_WHITEEN_Pos);
+
+    NRF_RADIO->MODECNF0 = (RADIO_MODECNF0_RU_Default << RADIO_MODECNF0_RU_Pos) |
+                          (RADIO_MODECNF0_DTX_Center << RADIO_MODECNF0_DTX_Pos);
+    NRF_RADIO->CRCCNF = 0u;
+    NRF_RADIO->BASE0 = 0u;
+    NRF_RADIO->PREFIX0 = 0u;
+    NRF_RADIO->DATAWHITEIV = 0u;
+
+    NRF_RADIO->PACKETPTR = (uint32_t)(uintptr_t)&s_test_carrier_packet;
+
+    NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_END_START_Msk;
+
+    NRF_RADIO->EVENTS_READY = 0u;
+    NRF_RADIO->EVENTS_END = 0u;
+    NRF_RADIO->EVENTS_DISABLED = 0u;
+
+    NRF_RADIO->TASKS_TXEN = 1u;
+    while (NRF_RADIO->EVENTS_READY == 0u) {
+        __NOP();
+    }
+    NRF_RADIO->EVENTS_READY = 0u;
+
+    NRF_RADIO->TASKS_START = 1u;
+
+    s_test_carrier_enabled = true;
 }

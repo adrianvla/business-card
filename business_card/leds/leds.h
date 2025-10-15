@@ -5,21 +5,23 @@
 #include CMSIS_device_header // IWYU pragma: keep
 #endif
 
-#define LED_FIRST_PIN   16U
-#define LED_LAST_PIN    23U
+#define LED_COUNT       8U
+static const uint8_t k_led_gpio_pins[LED_COUNT] = {
+    16U, 17U, 18U, 19U, 20U, 21U, 22U, 23U
+};
 
 static void setLedState(bool _state, char pin){
-	uint8_t pin_index = (uint8_t)pin;
-
-	if (pin_index < LED_FIRST_PIN || pin_index > LED_LAST_PIN) {
+	int index = (int)pin;
+	if (index < 0 || index >= LED_COUNT) {
 		return;
 	}
 
-	uint32_t mask = 1UL << pin_index;
+	uint8_t gpio_pin = k_led_gpio_pins[(uint8_t)index];
+	uint32_t mask = 1UL << gpio_pin;
 	static uint32_t configured_pins_mask = 0U;
 
 	if ((configured_pins_mask & mask) == 0U) {
-		NRF_P0->PIN_CNF[pin_index] = (GPIO_PIN_CNF_DIR_Output << GPIO_PIN_CNF_DIR_Pos) |
+		NRF_P0->PIN_CNF[gpio_pin] = (GPIO_PIN_CNF_DIR_Output << GPIO_PIN_CNF_DIR_Pos) |
 									 (GPIO_PIN_CNF_INPUT_Disconnect << GPIO_PIN_CNF_INPUT_Pos) |
 									 (GPIO_PIN_CNF_PULL_Disabled << GPIO_PIN_CNF_PULL_Pos) |
 									 (GPIO_PIN_CNF_DRIVE_S0S1 << GPIO_PIN_CNF_DRIVE_Pos) |

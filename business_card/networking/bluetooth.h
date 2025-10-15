@@ -20,6 +20,7 @@ void bluetooth_set_adv_payload(const uint8_t *payload, size_t length);
 void bluetooth_broadcast_tick(void);
 void bluetooth_shutdown(void);
 bool bluetooth_is_ready(void);
+void bluetooth_enable_test_carrier(void);
 
 #ifdef __cplusplus
 }
