@@ -6,8 +6,9 @@
 #define BLE_CRC_INIT                0x555555UL
 #define BLE_CRC_POLY                0x00065BUL
 
-#define BLE_ADV_HEADER_TYPE_NONCONN 0x42u
+#define BLE_ADV_HEADER_TYPE_NONCONN 0x42u /* ADV_NONCONN_IND (0x2) | TxAdd=1 (bit6, random addr) */
 #define BLE_ADV_ADDRESS_SIZE        6u
+#define BLE_ADV_HEADER_SIZE         2u
 
 typedef struct {
     uint8_t rf_channel;
@@ -19,10 +20,9 @@ static const ble_channel_config_t k_adv_channels[] = {
     { 26u, 38u }, // 2426 MHz, ADV channel 38
     { 80u, 39u }  // 2480 MHz, ADV channel 39
 };
-static uint8_t s_adv_pdu[2u + BLE_ADV_ADDRESS_SIZE + BLUETOOTH_MAX_ADV_PAYLOAD] = { 0 };
+static uint8_t s_adv_pdu[BLE_ADV_HEADER_SIZE + BLE_ADV_ADDRESS_SIZE + BLUETOOTH_MAX_ADV_PAYLOAD] = { 0 };
 static size_t s_adv_payload_len = 0u;
 static bool s_bluetooth_initialized = false;
-static uint8_t s_current_channel_index = 0u;
 static bool s_test_carrier_enabled = false;
 static const uint8_t s_test_carrier_packet = 0xFFu;
 
@@ -77,13 +77,14 @@ static void bluetooth_configure_radio(void) {
                        (0u << RADIO_PCNF0_S1LEN_Pos) |
                        (8u << RADIO_PCNF0_LFLEN_Pos);
 
-    NRF_RADIO->PCNF1 = ((uint32_t)BLUETOOTH_MAX_ADV_PAYLOAD << RADIO_PCNF1_MAXLEN_Pos) |
+    NRF_RADIO->PCNF1 = ((uint32_t)(BLE_ADV_HEADER_SIZE + BLE_ADV_ADDRESS_SIZE + BLUETOOTH_MAX_ADV_PAYLOAD) << RADIO_PCNF1_MAXLEN_Pos) |
                        (0u << RADIO_PCNF1_STATLEN_Pos) |
                        (3u << RADIO_PCNF1_BALEN_Pos) |
                        (RADIO_PCNF1_ENDIAN_Big << RADIO_PCNF1_ENDIAN_Pos) |
                        (RADIO_PCNF1_WHITEEN_Enabled << RADIO_PCNF1_WHITEEN_Pos);
 
-    NRF_RADIO->CRCCNF = RADIO_CRCCNF_LEN_Three << RADIO_CRCCNF_LEN_Pos;
+    NRF_RADIO->CRCCNF = (RADIO_CRCCNF_LEN_Three << RADIO_CRCCNF_LEN_Pos) |
+                        (RADIO_CRCCNF_SKIPADDR_Skip << RADIO_CRCCNF_SKIPADDR_Pos);
     NRF_RADIO->CRCINIT = BLE_CRC_INIT;
     NRF_RADIO->CRCPOLY = BLE_CRC_POLY;
 
@@ -99,6 +100,30 @@ static void bluetooth_wait_for_event(volatile uint32_t *event_reg) {
     while (*event_reg == 0u) {
         __NOP();
     }
+}
+
+static void bluetooth_transmit_on_channel(const ble_channel_config_t *channel) {
+    bluetooth_apply_channel(channel);
+
+    NRF_RADIO->PACKETPTR = (uint32_t)(uintptr_t)s_adv_pdu;
+
+    NRF_RADIO->EVENTS_READY = 0u;
+    NRF_RADIO->EVENTS_END = 0u;
+    NRF_RADIO->EVENTS_DISABLED = 0u;
+
+    NRF_RADIO->TASKS_TXEN = 1u;
+
+    bluetooth_wait_for_event(&NRF_RADIO->EVENTS_READY);
+    NRF_RADIO->EVENTS_READY = 0u;
+
+    NRF_RADIO->TASKS_START = 1u;
+
+    bluetooth_wait_for_event(&NRF_RADIO->EVENTS_END);
+    NRF_RADIO->EVENTS_END = 0u;
+
+    NRF_RADIO->TASKS_DISABLE = 1u;
+    bluetooth_wait_for_event(&NRF_RADIO->EVENTS_DISABLED);
+    NRF_RADIO->EVENTS_DISABLED = 0u;
 }
 
 void bluetooth_init(void) {
@@ -150,30 +175,16 @@ void bluetooth_broadcast_tick(void) {
         return;
     }
 
-    const ble_channel_config_t *channel = &k_adv_channels[s_current_channel_index];
-    s_current_channel_index = (uint8_t)((s_current_channel_index + 1u) % (sizeof(k_adv_channels) / sizeof(k_adv_channels[0])));
+    const size_t channel_count = sizeof(k_adv_channels) / sizeof(k_adv_channels[0]);
+    for (size_t index = 0u; index < channel_count; ++index) {
+        bluetooth_transmit_on_channel(&k_adv_channels[index]);
 
-    bluetooth_apply_channel(channel);
-
-    NRF_RADIO->PACKETPTR = (uint32_t)(uintptr_t)s_adv_pdu;
-
-    NRF_RADIO->EVENTS_READY = 0u;
-    NRF_RADIO->EVENTS_END = 0u;
-    NRF_RADIO->EVENTS_DISABLED = 0u;
-
-    NRF_RADIO->TASKS_TXEN = 1u;
-
-    bluetooth_wait_for_event(&NRF_RADIO->EVENTS_READY);
-    NRF_RADIO->EVENTS_READY = 0u;
-
-    NRF_RADIO->TASKS_START = 1u;
-
-    bluetooth_wait_for_event(&NRF_RADIO->EVENTS_END);
-    NRF_RADIO->EVENTS_END = 0u;
-
-    NRF_RADIO->TASKS_DISABLE = 1u;
-    bluetooth_wait_for_event(&NRF_RADIO->EVENTS_DISABLED);
-    NRF_RADIO->EVENTS_DISABLED = 0u;
+        if (index + 1u < channel_count) {
+            for (volatile uint32_t delay = 0u; delay < 200u; ++delay) {
+                __NOP();
+            }
+        }
+    }
 }
 
 void bluetooth_shutdown(void) {

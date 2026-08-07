@@ -9,6 +9,7 @@
 #define NFC_POLL_INTERVAL_MS          5U
 #define BLUETOOTH_ADV_INTERVAL_MS     30U
 
+// Advertising data exposes the card as "BizCard" in scanning apps.
 static const uint8_t k_adv_payload[] = {
     0x02, 0x01, 0x06,                // Flags: LE General Discoverable, BR/EDR not supported
     0x08, 0x09, 'B', 'i', 'z', 'C', 'a', 'r', 'd' // Complete Local Name: "BizCard"
@@ -22,8 +23,10 @@ int main(void) {
     nfc_start_sense();
 
     (void)bluetooth_init();
+    // Update the BLE advertisement payload before the first broadcast.
     bluetooth_set_adv_payload(k_adv_payload, sizeof(k_adv_payload));
 
+    play_animation_once(ANIMATION_PROGRESS, 50U, 40, LOOP_SLICE_MS);
     play_animation_once(ANIMATION_ALTERNATE, 125U, 10, LOOP_SLICE_MS);
     play_animation_once(ANIMATION_FROM_CENTER_RIPPLE, 125U, 20, LOOP_SLICE_MS);
     play_animation_once(ANIMATION_ALTERNATE, 125U, 10, LOOP_SLICE_MS);
@@ -55,7 +58,7 @@ int main(void) {
 
         bluetooth_elapsed_ms += LOOP_SLICE_MS;
         if (bluetooth_elapsed_ms >= BLUETOOTH_ADV_INTERVAL_MS && bluetooth_is_ready()) {
-            // Rotate through the BLE advertising channels at a steady cadence.
+            // Broadcast the full tri-channel advertising event once per interval.
             bluetooth_broadcast_tick();
             bluetooth_elapsed_ms = 0U;
         }
