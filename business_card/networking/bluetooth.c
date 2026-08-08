@@ -27,7 +27,7 @@ static bool s_test_carrier_enabled = false;
 static const uint8_t s_test_carrier_packet = 0xFFu;
 
 static const uint8_t k_default_adv_address[BLE_ADV_ADDRESS_SIZE] = {
-    0xC1, 0xDE, 0x1D, 0xEA, 0x52, 0xB1
+    0xC1, 0xDE, 0x1D, 0xEA, 0x52, 0xF1 /* 0xF1: top bits 11 = static random (valid AdvA class) */
 };
 
 static const uint8_t k_default_adv_payload[] = {
@@ -80,7 +80,7 @@ static void bluetooth_configure_radio(void) {
     NRF_RADIO->PCNF1 = ((uint32_t)(BLE_ADV_HEADER_SIZE + BLE_ADV_ADDRESS_SIZE + BLUETOOTH_MAX_ADV_PAYLOAD) << RADIO_PCNF1_MAXLEN_Pos) |
                        (0u << RADIO_PCNF1_STATLEN_Pos) |
                        (3u << RADIO_PCNF1_BALEN_Pos) |
-                       (RADIO_PCNF1_ENDIAN_Big << RADIO_PCNF1_ENDIAN_Pos) |
+                       (RADIO_PCNF1_ENDIAN_Little << RADIO_PCNF1_ENDIAN_Pos) |
                        (RADIO_PCNF1_WHITEEN_Enabled << RADIO_PCNF1_WHITEEN_Pos);
 
     NRF_RADIO->CRCCNF = (RADIO_CRCCNF_LEN_Three << RADIO_CRCCNF_LEN_Pos) |
@@ -229,7 +229,7 @@ void bluetooth_enable_test_carrier(void) {
     NRF_RADIO->PCNF1 = (1u << RADIO_PCNF1_MAXLEN_Pos) |
                        (0u << RADIO_PCNF1_STATLEN_Pos) |
                        (3u << RADIO_PCNF1_BALEN_Pos) |
-                       (RADIO_PCNF1_ENDIAN_Big << RADIO_PCNF1_ENDIAN_Pos) |
+                       (RADIO_PCNF1_ENDIAN_Little << RADIO_PCNF1_ENDIAN_Pos) |
                        (0u << RADIO_PCNF1_WHITEEN_Pos);
 
     NRF_RADIO->MODECNF0 = (RADIO_MODECNF0_RU_Default << RADIO_MODECNF0_RU_Pos) |
