@@ -30,16 +30,9 @@
 /* NFCT AUTOCOLRES register: bit 0 = 0 enables the hardware anti-collision engine. */
 #define NFC_AUTOCOLRES_REG        (*(volatile uint32_t *)0x4000559C)
 
-/* vCard 3.0 payload served as the NDEF MIME record. */
-static const char k_vcard[] =
-    "BEGIN:VCARD\r\n"
-    "VERSION:3.0\r\n"
-    "FN:Adrian Vlasov\r\n"
-    "N:Vlasov;Adrian;;;\r\n"
-    "URL:https://morisinc.net\r\n"
-    "END:VCARD\r\n";
-
-static const char k_ndef_type[] = "text/vcard";
+/* URI served as the NDEF well-known record. iOS background reading only
+ * reacts to URI records; the contact sheet comes from the hosted .vcf. */
+static const char k_uri[] = "https://morisinc.net/adrian.vcf";
 
 static bool s_nfc_initialized = false;
 static bool s_field_present = false;
@@ -73,32 +66,33 @@ static const uint8_t k_uid[NFC_T2T_UID_SIZE] = { 0x04u, 0x12u, 0x34u, 0x56u, 0x7
 static void nfc_build_t2t_memory(void) {
     memset(s_t2t_memory, 0, sizeof(s_t2t_memory));
 
-    /* Blocks 0-2: NFCID1 + BCC + internal/lock bytes. */
+    /* Blocks 0-2: NFCID1 per the Type 2 memory layout (NTAG-style):
+     * [UID0 UID1 UID2 BCC0] [UID3 UID4 UID5 UID6] [BCC1 internal locks]. */
     memcpy(&s_t2t_memory[0], s_uid, 3u);
-    s_t2t_memory[3] = s_uid[3];
-    memcpy(&s_t2t_memory[4], &s_uid[4], 3u);
-    s_t2t_memory[7] = s_uid[0] ^ s_uid[1] ^ s_uid[2] ^ s_uid[3] ^ s_uid[4] ^ s_uid[5] ^ s_uid[6];
-    s_t2t_memory[10] = 0x48u; /* static lock: data area locked (read-only tag) */
+    s_t2t_memory[3] = 0x88u ^ s_uid[0] ^ s_uid[1] ^ s_uid[2]; /* BCC0 */
+    memcpy(&s_t2t_memory[4], &s_uid[3], 4u);                   /* UID3..UID6 */
+    s_t2t_memory[8] = s_uid[3] ^ s_uid[4] ^ s_uid[5] ^ s_uid[6]; /* BCC1 */
+    s_t2t_memory[9] = 0x48u; /* internal byte (NTAG-style) */
 
-    /* Block 3: Capability Container. 0x7E = 1008-byte data area / 8 (Nordic convention). */
+    /* Block 3: Capability Container. CC2 = 0x06 (NTAG-compatible CCLEN). */
     s_t2t_memory[NFC_T2T_CC_BLOCK * NFC_T2T_BLOCK_SIZE + 0] = 0xE1u;
     s_t2t_memory[NFC_T2T_CC_BLOCK * NFC_T2T_BLOCK_SIZE + 1] = 0x10u;
-    s_t2t_memory[NFC_T2T_CC_BLOCK * NFC_T2T_BLOCK_SIZE + 2] = 0x06u; /* CCLEN: same as NTAG, accepted by all readers */
+    s_t2t_memory[NFC_T2T_CC_BLOCK * NFC_T2T_BLOCK_SIZE + 2] = 0x06u;
     s_t2t_memory[NFC_T2T_CC_BLOCK * NFC_T2T_BLOCK_SIZE + 3] = 0x00u;
 
-    /* Block 4+: NDEF TLV wrapping the vCard MIME record, terminated by TLV 0xFE. */
-    const size_t vcard_len = strlen(k_vcard);
-    const size_t type_len = sizeof(k_ndef_type) - 1u;
-    const size_t ndef_len = 3u + type_len + vcard_len; /* record header + type + payload */
+    /* Block 4+: NDEF TLV with a well-known URI record, terminated by 0xFE. */
+    const size_t uri_len = strlen(k_uri);
+    const size_t ndef_len = 3u + 1u + (1u + uri_len); /* record header + type + payload */
     uint8_t *p = &s_t2t_memory[NFC_T2T_FIRST_DATA_BLOCK * NFC_T2T_BLOCK_SIZE];
 
     p[0] = 0x03u;              /* NDEF TLV tag */
     p[1] = (uint8_t)ndef_len;  /* 1-byte length, message < 256 bytes */
-    p[2] = 0xD1u;              /* MB|ME|SR, TNF = 001 (MIME media) */
-    p[3] = (uint8_t)type_len;
-    p[4] = (uint8_t)vcard_len;
-    memcpy(&p[5], k_ndef_type, type_len);
-    memcpy(&p[5 + type_len], k_vcard, vcard_len);
+    p[2] = 0xD1u;              /* MB|ME|SR, TNF = 001 (NFC Forum well-known) */
+    p[3] = 0x01u;              /* type length: "U" */
+    p[4] = (uint8_t)(1u + uri_len); /* payload length: URI prefix code + URL */
+    p[5] = 0x55u;              /* 'U': URI record */
+    p[6] = 0x00u;              /* URI identifier code 0x00: full URI in payload */
+    memcpy(&p[7], k_uri, uri_len);
     p[2 + ndef_len] = 0xFEu;   /* terminator TLV */
 }
 
@@ -153,7 +147,8 @@ static void nfc_apply_config(void) {
     NVIC_EnableIRQ(NFCT_IRQn);
 
     NRF_NFCT->INTENSET = NFCT_INTENSET_SELECTED_Set |
-                         NFCT_INTENSET_RXFRAMEEND_Set;
+                         NFCT_INTENSET_RXFRAMEEND_Set |
+                         NFCT_INTENSET_TXFRAMEEND_Set;
 }
 
 static void nfc_arm_rx(void) {
@@ -201,6 +196,7 @@ void NFCT_IRQHandler(void) {
                                     ? (size_t)((rx_bits >> NFCT_RXD_AMOUNT_RXDATABYTES_Pos) - 2u)
                                     : 0u;
         const uint8_t *cmd = s_frame_buffer;
+        bool responded = false;
 
         if (rx_bytes >= 1u) {
             switch (cmd[0]) {
@@ -211,6 +207,7 @@ void NFCT_IRQHandler(void) {
                                &s_t2t_memory[(uint32_t)block * NFC_T2T_BLOCK_SIZE],
                                NFC_T2T_BLOCK_SIZE * NFC_T2T_READ_BLOCKS);
                         nfc_send_response(NFC_T2T_BLOCK_SIZE * NFC_T2T_READ_BLOCKS);
+                        responded = true;
                         if (++s_read_count >= 96u) {
                             nfc_end_session();
                             return;
@@ -222,6 +219,7 @@ void NFCT_IRQHandler(void) {
                 case 0xC2u:  /* SECTOR_SELECT: only sector 0 */
                     s_frame_buffer[0] = 0x00u;
                     nfc_send_response(1u);
+                    responded = true;
                     break;
                 case 0x50u:  /* SLP_REQ: reader finished, end the session */
                     nfc_end_session();
@@ -231,8 +229,14 @@ void NFCT_IRQHandler(void) {
             }
         }
 
-        /* Re-arm RX for the next command. The reader only sends after our
-         * response finishes (half-duplex + FDT), so arming here is safe. */
+        if (!responded) {
+            nfc_arm_rx();
+        }
+    }
+
+    /* Re-arm RX only after the response has left the shared EasyDMA buffer. */
+    if (NRF_NFCT->EVENTS_TXFRAMEEND) {
+        NRF_NFCT->EVENTS_TXFRAMEEND = 0;
         nfc_arm_rx();
     }
 }
@@ -279,7 +283,6 @@ void nfc_poll(void) {
     if (NRF_NFCT->EVENTS_FIELDDETECTED) {
         NRF_NFCT->EVENTS_FIELDDETECTED = 0;
         s_field_present = true;
-        NRF_NFCT->TASKS_ACTIVATE = 1;
     }
 
     if (NRF_NFCT->EVENTS_STARTED) {
