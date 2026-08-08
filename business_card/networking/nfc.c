@@ -17,6 +17,7 @@
 #define NFC_T2T_MAX_READ_BLOCK    ((NFC_T2T_MEMORY_SIZE / NFC_T2T_BLOCK_SIZE) - NFC_T2T_READ_BLOCKS)
 
 #define NFC_FRAME_BUFFER_SIZE     64U
+#define NFC_T2T_UID_SIZE          7U
 
 /* Frame delay window (13.56 MHz ticks): 0x1000 ~ 302 us. Matches Nordic's reference driver. */
 #define NFC_FRAME_DELAY_MAX       0x1000U
@@ -42,9 +43,9 @@ static const char k_ndef_type[] = "text/vcard";
 
 static bool s_nfc_initialized = false;
 static bool s_field_present = false;
-static bool s_tx_pending = false;
+static uint8_t s_read_count = 0;
 
-static uint8_t s_uid[7];
+static uint8_t s_uid[NFC_T2T_UID_SIZE];
 static uint8_t s_t2t_memory[NFC_T2T_MEMORY_SIZE];
 __ALIGNED(4) static uint8_t s_frame_buffer[NFC_FRAME_BUFFER_SIZE];
 
@@ -65,24 +66,8 @@ static void nfc_configure_pins(void) {
     NRF_P0->PIN_CNF[NFC_PIN_NFC2] = NFC_PIN_CONFIG;
 }
 
-/* 7-byte NFCID1 from the factory-programmed FICR tag header. */
-static void nfc_read_uid(void) {
-    const uint32_t th0 = NRF_FICR->NFC.TAGHEADER0;
-    const uint32_t th1 = NRF_FICR->NFC.TAGHEADER1;
-
-    s_uid[0] = (uint8_t)(th0 >> 0);
-    s_uid[1] = (uint8_t)(th0 >> 8);
-    s_uid[2] = (uint8_t)(th0 >> 16);
-    s_uid[3] = (uint8_t)(th1 >> 0);
-    s_uid[4] = (uint8_t)(th1 >> 8);
-    s_uid[5] = (uint8_t)(th1 >> 16);
-    s_uid[6] = (uint8_t)(th1 >> 24);
-
-    /* Anomaly 181: 0x88 is not a valid byte 3 of a double-size NFCID1. */
-    if (s_uid[3] == 0x88u) {
-        s_uid[3] |= 0x11u;
-    }
-}
+/* Fixed 7-byte NFCID1 (double size). First byte must not be the cascade tag 0x88. */
+static const uint8_t k_uid[NFC_T2T_UID_SIZE] = { 0x04u, 0x12u, 0x34u, 0x56u, 0x78u, 0x9Au, 0xBCu };
 
 /* Build the 1024-byte T2T memory image: UID/BCC, CC block, NDEF TLV with the vCard. */
 static void nfc_build_t2t_memory(void) {
@@ -98,7 +83,7 @@ static void nfc_build_t2t_memory(void) {
     /* Block 3: Capability Container. 0x7E = 1008-byte data area / 8 (Nordic convention). */
     s_t2t_memory[NFC_T2T_CC_BLOCK * NFC_T2T_BLOCK_SIZE + 0] = 0xE1u;
     s_t2t_memory[NFC_T2T_CC_BLOCK * NFC_T2T_BLOCK_SIZE + 1] = 0x10u;
-    s_t2t_memory[NFC_T2T_CC_BLOCK * NFC_T2T_BLOCK_SIZE + 2] = (uint8_t)((NFC_T2T_MEMORY_SIZE - 16u) / 8u);
+    s_t2t_memory[NFC_T2T_CC_BLOCK * NFC_T2T_BLOCK_SIZE + 2] = 0x06u; /* CCLEN: same as NTAG, accepted by all readers */
     s_t2t_memory[NFC_T2T_CC_BLOCK * NFC_T2T_BLOCK_SIZE + 3] = 0x00u;
 
     /* Block 4+: NDEF TLV wrapping the vCard MIME record, terminated by TLV 0xFE. */
@@ -154,7 +139,7 @@ static void nfc_apply_config(void) {
                        NFCT_SHORTS_FIELDLOST_SENSE_Msk;
 
     NRF_NFCT->FRAMEDELAYMODE = 1u; /* WindowGrid */
-    NRF_NFCT->FRAMEDELAYMIN = 0u;
+    NRF_NFCT->FRAMEDELAYMIN = 0x800u; /* ~217 us: FDT so the reader is back in RX before we answer */
     NRF_NFCT->FRAMEDELAYMAX = NFC_FRAME_DELAY_MAX;
 
     NRF_NFCT->TXD.FRAMECONFIG = NFC_FRAMECONFIG;
@@ -167,12 +152,8 @@ static void nfc_apply_config(void) {
     NVIC_SetPriority(NFCT_IRQn, 2u);
     NVIC_EnableIRQ(NFCT_IRQn);
 
-    NRF_NFCT->INTENSET = NFCT_INTENSET_FIELDDETECTED_Set |
-                         NFCT_INTENSET_SELECTED_Set |
-                         NFCT_INTENSET_RXFRAMEEND_Set |
-                         NFCT_INTENSET_RXERROR_Set |
-                         NFCT_INTENSET_TXFRAMEEND_Set |
-                         NFCT_INTENSET_ERROR_Set;
+    NRF_NFCT->INTENSET = NFCT_INTENSET_SELECTED_Set |
+                         NFCT_INTENSET_RXFRAMEEND_Set;
 }
 
 static void nfc_arm_rx(void) {
@@ -181,8 +162,15 @@ static void nfc_arm_rx(void) {
 
 static void nfc_send_response(size_t byte_count) {
     NRF_NFCT->TXD.AMOUNT = (uint32_t)byte_count << NFCT_TXD_AMOUNT_TXDATABYTES_Pos;
-    s_tx_pending = true;
     NRF_NFCT->TASKS_STARTTX = 1;
+}
+
+static void nfc_end_session(void) {
+    /* End the tag session: sleep and stop reacting to re-selection so a
+     * re-polling reader cannot keep the ISR busy (main-loop freeze). The
+     * poll loop re-enables SELECTED on the next field loss. */
+    NRF_NFCT->INTENCLR = NFCT_INTENCLR_SELECTED_Clear;
+    NRF_NFCT->TASKS_GOSLEEP = 1;
 }
 
 void NFCT_IRQHandler(void) {
@@ -199,14 +187,8 @@ void NFCT_IRQHandler(void) {
         NRF_NFCT->EVENTS_RXERROR = 0;
         NRF_NFCT->EVENTS_TXFRAMESTART = 0;
         NRF_NFCT->EVENTS_TXFRAMEEND = 0;
-        NRF_NFCT->ERRORSTATUS = NFCT_ERRORSTATUS_FRAMEDELAYTIMEOUT_Msk |
-                                NFCT_ERRORSTATUS_NFCFIELDTOOSTRONG_Msk |
-                                NFCT_ERRORSTATUS_NFCFIELDTOOWEAK_Msk;
-        NRF_NFCT->FRAMESTATUS.RX = NFCT_FRAMESTATUS_RX_CRCERROR_Msk |
-                                   NFCT_FRAMESTATUS_RX_PARITYSTATUS_Msk |
-                                   NFCT_FRAMESTATUS_RX_OVERRUN_Msk;
         NRF_NFCT->FRAMEDELAYMAX = NFC_FRAME_DELAY_MAX;
-        s_tx_pending = false;
+        s_read_count = 0;
         nfc_arm_rx();
     }
 
@@ -229,8 +211,10 @@ void NFCT_IRQHandler(void) {
                                &s_t2t_memory[(uint32_t)block * NFC_T2T_BLOCK_SIZE],
                                NFC_T2T_BLOCK_SIZE * NFC_T2T_READ_BLOCKS);
                         nfc_send_response(NFC_T2T_BLOCK_SIZE * NFC_T2T_READ_BLOCKS);
-                    } else {
-                        nfc_arm_rx();
+                        if (++s_read_count >= 96u) {
+                            nfc_end_session();
+                            return;
+                        }
                     }
                     break;
                 }
@@ -239,41 +223,17 @@ void NFCT_IRQHandler(void) {
                     s_frame_buffer[0] = 0x00u;
                     nfc_send_response(1u);
                     break;
-                case 0x50u:  /* SLP_REQ: no response, re-arm RX */
-                    nfc_arm_rx();
-                    break;
-                default:     /* unknown command: ignore, re-arm RX */
-                    nfc_arm_rx();
+                case 0x50u:  /* SLP_REQ: reader finished, end the session */
+                    nfc_end_session();
+                    return;
+                default:     /* unknown command: ignore */
                     break;
             }
-        } else {
-            nfc_arm_rx();
         }
-    }
 
-    if (NRF_NFCT->EVENTS_TXFRAMEEND) {
-        NRF_NFCT->EVENTS_TXFRAMEEND = 0;
-        s_tx_pending = false;
+        /* Re-arm RX for the next command. The reader only sends after our
+         * response finishes (half-duplex + FDT), so arming here is safe. */
         nfc_arm_rx();
-    }
-
-    if (NRF_NFCT->EVENTS_RXERROR) {
-        NRF_NFCT->EVENTS_RXERROR = 0;
-        NRF_NFCT->FRAMESTATUS.RX = NFCT_FRAMESTATUS_RX_CRCERROR_Msk |
-                                   NFCT_FRAMESTATUS_RX_PARITYSTATUS_Msk |
-                                   NFCT_FRAMESTATUS_RX_OVERRUN_Msk;
-        nfc_arm_rx();
-    }
-
-    if (NRF_NFCT->EVENTS_ERROR) {
-        NRF_NFCT->EVENTS_ERROR = 0;
-        /* FRAMEDELAYTIMEOUT is expected when no response is sent (SLP_REQ etc.). */
-        NRF_NFCT->ERRORSTATUS = NFCT_ERRORSTATUS_FRAMEDELAYTIMEOUT_Msk |
-                                NFCT_ERRORSTATUS_NFCFIELDTOOSTRONG_Msk |
-                                NFCT_ERRORSTATUS_NFCFIELDTOOWEAK_Msk;
-        if (!s_tx_pending) {
-            nfc_arm_rx();
-        }
     }
 }
 
@@ -284,7 +244,7 @@ void nfc_init(void) {
 
     nfc_ensure_hfclk();
     nfc_configure_pins();
-    nfc_read_uid();
+    memcpy(s_uid, k_uid, NFC_T2T_UID_SIZE);
     nfc_build_t2t_memory();
 
     NRF_NFCT->TASKS_DISABLE = 1;
@@ -326,16 +286,26 @@ void nfc_poll(void) {
         NRF_NFCT->EVENTS_STARTED = 0;
     }
 
+    /* Error/status flags are polled here instead of interrupting: ERROR and
+     * RXERROR can re-assert immediately after clearing (e.g. NFCFIELDTOOSTRONG
+     * with a close reader), which would otherwise starve the main loop. */
+    if (NRF_NFCT->EVENTS_ERROR) {
+        NRF_NFCT->EVENTS_ERROR = 0;
+    }
+    if (NRF_NFCT->EVENTS_RXERROR) {
+        NRF_NFCT->EVENTS_RXERROR = 0;
+    }
+    NRF_NFCT->ERRORSTATUS = NFCT_ERRORSTATUS_FRAMEDELAYTIMEOUT_Msk |
+                            NFCT_ERRORSTATUS_NFCFIELDTOOSTRONG_Msk |
+                            NFCT_ERRORSTATUS_NFCFIELDTOOWEAK_Msk;
+    NRF_NFCT->FRAMESTATUS.RX = NFCT_FRAMESTATUS_RX_CRCERROR_Msk |
+                               NFCT_FRAMESTATUS_RX_PARITYSTATUS_Msk |
+                               NFCT_FRAMESTATUS_RX_OVERRUN_Msk;
+
     if (NRF_NFCT->EVENTS_FIELDLOST) {
         NRF_NFCT->EVENTS_FIELDLOST = 0;
         s_field_present = false;
-        s_tx_pending = false;
-
-        /* Full peripheral soft-reset + reconfiguration (anomalies 79/116). */
         NRF_NFCT->TASKS_DISABLE = 1;
-        NFC_PERIPHERAL_RESET = 0;
-        (void)NFC_PERIPHERAL_RESET;
-        NFC_PERIPHERAL_RESET = 1;
         nfc_apply_config();
         NRF_NFCT->TASKS_SENSE = 1;
     }
