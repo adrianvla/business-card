@@ -37,6 +37,7 @@ static const char k_uri[] = "https://morisinc.net/adrian.vcf";
 static bool s_nfc_initialized = false;
 static bool s_field_present = false;
 static uint8_t s_read_count = 0;
+static uint8_t s_session_closed_ticks = 0; /* 5ms polls until the tag is selectable again */
 
 static uint8_t s_uid[NFC_T2T_UID_SIZE];
 static uint8_t s_t2t_memory[NFC_T2T_MEMORY_SIZE];
@@ -163,9 +164,11 @@ static void nfc_send_response(size_t byte_count) {
 static void nfc_end_session(void) {
     /* End the tag session: sleep and stop reacting to re-selection so a
      * re-polling reader cannot keep the ISR busy (main-loop freeze). The
-     * poll loop re-enables SELECTED on the next field loss. */
+     * poll loop re-enables SELECTED after a short timeout (or on field loss)
+     * so a fresh tap can always start a new session. */
     NRF_NFCT->INTENCLR = NFCT_INTENCLR_SELECTED_Clear;
     NRF_NFCT->TASKS_GOSLEEP = 1;
+    s_session_closed_ticks = 40u; /* ~200 ms quiet before selectable again */
 }
 
 void NFCT_IRQHandler(void) {
@@ -308,9 +311,18 @@ void nfc_poll(void) {
     if (NRF_NFCT->EVENTS_FIELDLOST) {
         NRF_NFCT->EVENTS_FIELDLOST = 0;
         s_field_present = false;
+        s_session_closed_ticks = 0u;
         NRF_NFCT->TASKS_DISABLE = 1;
         nfc_apply_config();
         NRF_NFCT->TASKS_SENSE = 1;
+    }
+
+    /* After a closed session, make the tag selectable again after the quiet
+     * window even if the reader's field never drops (a fresh tap must work). */
+    if (s_session_closed_ticks > 0u) {
+        if (--s_session_closed_ticks == 0u) {
+            NRF_NFCT->INTENSET = NFCT_INTENSET_SELECTED_Set;
+        }
     }
 }
 
