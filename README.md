@@ -9,6 +9,7 @@ Uses NRF52’s ADC to measure battery’s voltage, sends that by Bluetooth and a
 ## Presenter remote
 
 This also works as a BLE presenter remote, pressing ← and → keys and lighting up LEDs when flicking in either direction with the card facing up.
+<img width="2048" height="1198" alt="image" src="https://github.com/user-attachments/assets/33d412e7-6a9d-44c3-8f4a-176bacfda1de" />
 
 <img width="3024" height="4032" alt="IMG_3683" src="https://github.com/user-attachments/assets/1faa5be6-efe1-4e25-8391-9debfcb12dde" />
 
